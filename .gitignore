@@ -1,0 +1,21 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+coverage/
+.pnpm-store/
+storage/uploads/
+_doc_review/
+*.log
+*.tsbuildinfo
+.tmp-build*/
+
+# 本地开发工具与临时构建缓存，不属于应用部署内容
+.tmp-esbuild/
+.venv/
+.idea/
+apps/web/.build/
+apps/web/.smoke/
+backups/
+apps/api/tmp_boot.*

@@ -1,0 +1,24 @@
+{
+  "name": "@bms/web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "node -e \"console.log('Web tests are not configured yet')\""
+  },
+  "dependencies": {
+    "docx-preview": "0.3.7",
+    "element-plus": "^2.9.9",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "@vitejs/plugin-vue": "^5.2.3",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.3",
+    "vue-tsc": "^2.2.8"
+  }
+}

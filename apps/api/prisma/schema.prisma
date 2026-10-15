@@ -1,0 +1,824 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum DataScope {
+  ALL
+  DEPARTMENT
+  DEPARTMENT_AND_DESCENDANTS
+  SELF
+  RELATED
+  NONE
+}
+
+enum PermissionKind {
+  FUNCTION
+  DATA
+  FIELD
+  OPERATION
+  NODE
+  ADMIN
+}
+
+enum WorkflowVersionStatus {
+  DRAFT
+  PUBLISHED
+  LOCKED
+}
+
+enum WorkflowNodeType {
+  MANUAL
+  AUTOMATIC
+  PARALLEL
+  CONDITION
+}
+
+enum AssigneeType {
+  USER
+  ROLE
+  DEPARTMENT_MANAGER
+}
+
+model User {
+  id                  String                     @id @default(cuid())
+  username            String                     @unique
+  passwordHash        String
+  displayName         String
+  email               String?
+  phone               String?
+  status              UserStatus                 @default(ACTIVE)
+  isSystemAdmin       Boolean                    @default(false)
+  createdAt           DateTime                   @default(now())
+  updatedAt           DateTime                   @updatedAt
+  deletedAt           DateTime?
+  departments         UserDepartment[]
+  roles               UserRole[]
+  managedDepartments  Department[]               @relation("DepartmentManager")
+  auditLogs           AuditLog[]                 @relation("AuditActor")
+  ownedCustomers      Customer[]                 @relation("CustomerOwner")
+  ownedContracts      Contract[]                 @relation("ContractOwner")
+  ownedProjects       Project[]                  @relation("ProjectOwner")
+  uploadedFiles       FileAsset[]                @relation("FileUploader")
+  statusChanges       StatusChangeHistory[]      @relation("StatusChangeOperator")
+  nodeActions         ProjectNodeHistory[]       @relation("ProjectNodeOperator")
+  handledReminders    Reminder[]                 @relation("ReminderHandler")
+  terminatedContracts Contract[]                 @relation("ContractTerminator")
+  amountAdjustments   ContractAmountAdjustment[] @relation("ContractAdjustmentOperator")
+  mailSent            MailDelivery[]             @relation("MailDeliverySender")
+  mailRegistered      MailDelivery[]             @relation("MailDeliveryRegistrar")
+  actionRecords       ActionRecord[]             @relation("ActionRecordOperator")
+  filingResults       FilingResult[]             @relation("FilingResultRecorder")
+  submittedFeedback   Feedback[]                 @relation("FeedbackSubmitter")
+  handledFeedback     Feedback[]                 @relation("FeedbackHandler")
+  feedbackRouteUpdates FeedbackRoutingDepartment[] @relation("FeedbackRouteUpdater")
+}
+
+model Department {
+  id        String           @id @default(cuid())
+  name      String
+  code      String           @unique
+  parentId  String?
+  managerId String?
+  isActive  Boolean          @default(true)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+  parent    Department?      @relation("DepartmentTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children  Department[]     @relation("DepartmentTree")
+  manager   User?            @relation("DepartmentManager", fields: [managerId], references: [id], onDelete: SetNull)
+  members   UserDepartment[]
+  feedbackRouting FeedbackRoutingDepartment[]
+}
+
+model UserDepartment {
+  userId       String
+  departmentId String
+  isPrimary    Boolean    @default(false)
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+
+  @@id([userId, departmentId])
+  @@index([departmentId])
+}
+
+model Role {
+  id          String           @id @default(cuid())
+  name        String
+  code        String           @unique
+  description String?
+  isSystem    Boolean          @default(false)
+  isActive    Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  users       UserRole[]
+  permissions RolePermission[]
+}
+
+model UserRole {
+  userId     String
+  roleId     String
+  assignedAt DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role       Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@index([roleId])
+}
+
+model Permission {
+  id          String           @id @default(cuid())
+  code        String           @unique
+  name        String
+  kind        PermissionKind
+  resource    String
+  action      String
+  fieldKey    String?
+  description String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  roles       RolePermission[]
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  allowed      Boolean    @default(true)
+  dataScope    DataScope  @default(NONE)
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+}
+
+model Customer {
+  id           String     @id @default(cuid())
+  name         String
+  customerType String?
+  contactName  String?
+  phone        String?
+  /// 联系人邮箱（PRD 8.1）：官文邮件的主收件人来源
+  email        String?
+  address      String?
+  ownerId      String?
+  customFields Json?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  deletedAt    DateTime?
+  /// PRD 7.2：删除原因落库（核心模块统一口径）
+  deleteReason String?
+  deletedBy    String?
+  owner        User?      @relation("CustomerOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  contracts    Contract[]
+
+  @@index([name])
+  @@index([ownerId])
+}
+
+model Contract {
+  id                      String                      @id @default(cuid())
+  contractNo              String                      @unique
+  customerId              String
+  contractType            String?
+  /// 产品（PRD 8.2 必填）
+  product                 String?
+  amount                  Decimal                     @db.Decimal(18, 2)
+  /// 件数：合同录入后按此数量自动生成项目，缺省 1 件。
+  itemCount               Int                         @default(1)
+  /// 单价（PRD 8.2）：填写后与「单价 × 件数」互相校验，不一致时提示
+  unitPrice               Decimal?                    @db.Decimal(18, 2)
+  /// 付款方式（PRD 8.2）：全款 / 分期 / 按进度，选项编码
+  paymentTerm             String?
+  /// 备注（PRD 8.2）
+  remark                  String?
+  /// 公司名称：合同上的快照，留空时取客户名称（PRD 8.2 必填，与客户名称同源）
+  companyName             String?
+  /// 联系人信息快照：留空时取客户上的联系人信息，保证合同上能独立看到签约时的联系人
+  contactName             String?
+  contactPhone            String?
+  contactEmail            String?
+  companyAddress          String?
+  signedAt                DateTime?
+  /// 合同到期日（业务口径）
+  expiryDate              DateTime?
+  /// 业务起算日期：由业务人员人工填写，用于系统建议截止日计算
+  businessStartAt         DateTime?
+  /// 法定截止日：官方/客户要求的最后期限，提醒中心据此倒推内部安全日
+  legallyDueAt            DateTime?
+  /// 内部安全日：内部要求的完成日，留出缓冲。未填写时按「法定截止日 - 安全天数配置」自动推算
+  internalSafetyDate      DateTime?
+  statusCode              String                      @default("ACTIVE")
+  /// ---- 合同终止（PRD 4.2 要求记录 5 个要素）----
+  /// 终止日期
+  terminatedAt            DateTime?
+  /// 终止类型（选项编码，系统 B 可配置）
+  terminationType         String?
+  /// 终止原因
+  terminationReason       String?
+  /// 未完成项目的处理方式（选项编码）
+  unfinishedProjectAction String?
+  /// 未回款的处理方式（选项编码）
+  unpaidAmountAction      String?
+  /// 终止操作人与时间，便于留痕
+  terminatedById          String?
+  /// 乐观锁版本号：更新时比对，避免多人同时编辑互相覆盖（PRD 非功能需求）
+  version                 Int                         @default(0)
+  ownerId                 String?
+  customFields            Json?
+  /// 业务起算日：合同录入、项目绑定生成的那一刻即是业务起算点，由系统自动产生，无需人工填写。
+  /// 系统算建议法定截止日即从此日 + 业务时限天数推算（见 TimeLimitService）。
+  createdAt               DateTime                    @default(now())
+  updatedAt               DateTime                    @updatedAt
+  deletedAt               DateTime?
+  /// PRD 7.2：删除必须填原因；落库后「已删除数据」视图才能展示为什么删的。
+  /// （官方记录类原本只把原因写进审计日志，恢复视图取不到，因此核心模块改为落库。）
+  deleteReason            String?
+  /// 谁执行的删除，便于恢复时确认来源（同时审计日志里也有）
+  deletedBy               String?
+  customer                Customer                    @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  owner                   User?                       @relation("ContractOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  terminatedBy            User?                       @relation("ContractTerminator", fields: [terminatedById], references: [id], onDelete: SetNull)
+  projects                Project[]
+  receipts                PaymentReceipt[]
+  paymentAllocations      PaymentContractAllocation[]
+  costs                   CostRecord[]
+  adjustments             ContractAmountAdjustment[]
+
+  @@index([customerId])
+  @@index([ownerId])
+  @@index([statusCode])
+  @@index([expiryDate])
+  @@index([legallyDueAt])
+  @@index([internalSafetyDate])
+  @@index([terminatedAt])
+}
+
+/// 合同金额调整（退款 / 折扣 / 部分豁免 等）。
+///
+/// 取舍：不改 `Contract.amount`，而是单独记账。原金额可追溯、调整历史完整，
+/// 未收款 = 合同金额 - 已收款 - 累计调整额。
+model ContractAmountAdjustment {
+  id         String    @id @default(cuid())
+  contractId String
+  /// 调整类型：REFUND 退款 / DISCOUNT 折扣 / WAIVER 部分豁免 / OTHER 其他（选项编码）
+  adjustType String
+  /// 调整金额（正数，表示减少应收）
+  amount     Decimal   @db.Decimal(18, 2)
+  reason     String?
+  occurredAt DateTime
+  operatorId String?
+  note       String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  contract   Contract  @relation(fields: [contractId], references: [id], onDelete: Cascade)
+  operator   User?     @relation("ContractAdjustmentOperator", fields: [operatorId], references: [id], onDelete: SetNull)
+
+  @@index([contractId, occurredAt])
+  @@index([adjustType])
+}
+
+model Project {
+  id                   String                     @id @default(cuid())
+  projectNo            String                     @unique
+  contractId           String
+  sequence             Int
+  projectName          String
+  projectType          String?
+  statusCode           String                     @default("PENDING")
+  /// 乐观锁版本号：更新与节点推进时比对，避免多人同时编辑互相覆盖
+  version              Int                        @default(0)
+  /// 本项目绑定的流程版本；老项目保持老版本，新项目用当前已发布版本（PRD 4.4 版本化）
+  workflowVersionId    String?
+  /// 当前流程节点编码
+  currentNodeCode      String?
+  /// 进入当前节点的时间，用于计算节点超期
+  currentNodeEnteredAt DateTime?
+  ownerId              String?
+  startDate            DateTime?
+  dueDate              DateTime?
+  customFields         Json?
+  createdAt            DateTime                   @default(now())
+  updatedAt            DateTime                   @updatedAt
+  deletedAt            DateTime?
+  /// PRD 7.2：删除原因落库（核心模块统一口径），「已删除数据」视图据此展示
+  deleteReason         String?
+  /// 级联作废时记录：因为所属合同被删而作废（便于区分"主动删的"与"跟着父级作废的"）
+  deletedBy            String?
+  contract             Contract                   @relation(fields: [contractId], references: [id], onDelete: Restrict)
+  owner                User?                      @relation("ProjectOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  workflowVersion      WorkflowVersion?           @relation(fields: [workflowVersionId], references: [id], onDelete: SetNull)
+  costs                CostRecord[]
+  payments             ProjectPaymentAllocation[]
+  nodeHistory          ProjectNodeHistory[]
+  officialDocuments    OfficialDocument[]
+  actionRecords        ActionRecord[]
+  filingResults        FilingResult[]
+
+  @@unique([contractId, sequence])
+  @@index([contractId])
+  @@index([ownerId])
+  @@index([statusCode])
+}
+
+/// 收款单：归属一个合同，可在该合同下的多个项目之间分摊。
+/// 合同层面的已收款 = 该合同下所有收款单金额之和；项目层面的回款 = 分摊到该项目的金额之和。
+model PaymentReceipt {
+  id                  String                      @id @default(cuid())
+  receiptNo           String                      @unique
+  /// 兼容旧数据：单合同回款仍保留该字段；跨合同回款使用 contractAllocations
+  contractId          String?
+  amount              Decimal                     @db.Decimal(18, 2)
+  receivedAt          DateTime
+  paymentMethod       String?
+  note                String?
+  customFields        Json?
+  createdAt           DateTime                    @default(now())
+  updatedAt           DateTime                    @updatedAt
+  deletedAt           DateTime?
+  /// PRD 7.2：删除原因（回款一般不做级联作废，删除需单独说明）
+  deleteReason        String?
+  deletedBy           String?
+  contract            Contract?                   @relation(fields: [contractId], references: [id], onDelete: Restrict)
+  contractAllocations PaymentContractAllocation[]
+  allocations         ProjectPaymentAllocation[]
+
+  @@index([contractId])
+  @@index([receivedAt])
+}
+
+/// 回款在合同上的分配。一笔回款可以对应多个合同。
+/// 合同已收款 = 该合同的分配金额之和；旧数据通过 contractId 兼容读取。
+model PaymentContractAllocation {
+  paymentId  String
+  contractId String
+  amount     Decimal        @db.Decimal(18, 2)
+  payment    PaymentReceipt @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  contract   Contract       @relation(fields: [contractId], references: [id], onDelete: Restrict)
+
+  @@id([paymentId, contractId])
+  @@index([contractId])
+}
+
+/// 回款在项目上的分摊。同一收款单的所有分摊必须属于收款单所属合同。
+model ProjectPaymentAllocation {
+  paymentId String
+  projectId String
+  amount    Decimal        @db.Decimal(18, 2)
+  payment   PaymentReceipt @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+  project   Project        @relation(fields: [projectId], references: [id], onDelete: Restrict)
+
+  @@id([paymentId, projectId])
+  @@index([projectId])
+}
+
+/// 成本记录：登记在项目上（合同成本 = 其下项目成本之和），contractId 为便于按合同汇总的冗余列。
+model CostRecord {
+  id         String    @id @default(cuid())
+  contractId String
+  projectId  String
+  costType   String
+  amount     Decimal   @db.Decimal(18, 2)
+  incurredAt DateTime
+  note       String?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  deletedAt  DateTime?
+  /// PRD 7.2：删除或级联作废的原因
+  deleteReason String?
+  deletedBy  String?
+  contract   Contract  @relation(fields: [contractId], references: [id], onDelete: Restrict)
+  project    Project   @relation(fields: [projectId], references: [id], onDelete: Restrict)
+
+  @@index([contractId])
+  @@index([projectId])
+  @@index([incurredAt])
+}
+
+model FieldDefinition {
+  id            String   @id @default(cuid())
+  moduleKey     String
+  fieldKey      String
+  label         String
+  fieldType     String
+  isRequired    Boolean  @default(false)
+  isSystem      Boolean  @default(false)
+  isListVisible Boolean  @default(false)
+  isSearchable  Boolean  @default(false)
+  sortOrder     Int      @default(0)
+  config        Json?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([moduleKey, fieldKey])
+  @@index([moduleKey, sortOrder])
+}
+
+model StatusDefinition {
+  id             String   @id @default(cuid())
+  moduleKey      String
+  code           String
+  label          String
+  color          String?
+  statisticsCode String?
+  sortOrder      Int      @default(0)
+  /// 业务时限天数（PRD 4.7 系统算建议截止日）：目前仅合同类型使用；为空时退回全局默认值
+  timeLimitDays  Int?
+  /// 时限说明，便于维护者理解这个天数怎么来的
+  timeLimitNote  String?
+  isSystem       Boolean  @default(false)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([moduleKey, code])
+  @@index([moduleKey, sortOrder])
+}
+
+model WorkflowTemplate {
+  id          String            @id @default(cuid())
+  moduleKey   String
+  name        String
+  description String?
+  /// 预置模板标记：由种子创建（专利/商标/软著/项目/通用流程），**不允许删除**。
+  /// 用户自己新建的模板为 false，可以在「管理系统 → 流程管理」中删除。
+  isSystem    Boolean           @default(false)
+  isActive    Boolean           @default(true)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  versions    WorkflowVersion[]
+
+  @@index([moduleKey])
+}
+
+model WorkflowVersion {
+  id          String                @id @default(cuid())
+  templateId  String
+  version     Int
+  status      WorkflowVersionStatus @default(DRAFT)
+  publishedAt DateTime?
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+  template    WorkflowTemplate      @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  nodes       WorkflowNode[]
+  projects    Project[]
+
+  @@unique([templateId, version])
+  @@index([templateId, status])
+}
+
+model WorkflowNode {
+  id           String           @id @default(cuid())
+  versionId    String
+  code         String
+  name         String
+  nodeType     WorkflowNodeType
+  sequence     Int
+  assigneeType AssigneeType?
+  assigneeId   String?
+  deadlineDays Int?
+  warningDays  Int?
+  settings     Json?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  version      WorkflowVersion  @relation(fields: [versionId], references: [id], onDelete: Cascade)
+
+  @@unique([versionId, code])
+  @@unique([versionId, sequence])
+}
+
+model AuditLog {
+  id           String   @id @default(cuid())
+  actorId      String?
+  action       String
+  resourceType String
+  resourceId   String?
+  reason       String?
+  beforeData   Json?
+  afterData    Json?
+  ipAddress    String?
+  userAgent    String?
+  createdAt    DateTime @default(now())
+  actor        User?    @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([actorId, createdAt])
+  @@index([resourceType, resourceId, createdAt])
+}
+
+/// 状态变化历史：记录合同/项目每次状态流转（原状态 → 新状态、原因、操作人、时间）。
+/// 与 AuditLog 的分工：AuditLog 记录"发生了什么操作"，本表专门回答"状态是怎么变成现在这样的"。
+model StatusChangeHistory {
+  id             String   @id @default(cuid())
+  /// 资源类型：Contract / Project
+  resourceType   String
+  resourceId     String
+  fromStatusCode String?
+  toStatusCode   String
+  reason         String?
+  operatorId     String?
+  changedAt      DateTime @default(now())
+  operator       User?    @relation("StatusChangeOperator", fields: [operatorId], references: [id], onDelete: SetNull)
+
+  @@index([resourceType, resourceId, changedAt])
+  @@index([operatorId])
+}
+
+/// 项目节点流转历史：项目实际走过的节点（谁、什么时候、从哪个节点到哪个节点）。
+/// 与模板层 WorkflowNode 的区别：WorkflowNode 是"模板里的节点定义"，本表是"某个项目实际走过的记录"。
+model ProjectNodeHistory {
+  id                String    @id @default(cuid())
+  projectId         String
+  workflowVersionId String?
+  fromNodeCode      String?
+  toNodeCode        String
+  operatorId        String?
+  actionAt          DateTime  @default(now())
+  deadlineAt        DateTime?
+  reason            String?
+  note              String?
+  project           Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  operator          User?     @relation("ProjectNodeOperator", fields: [operatorId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, actionAt])
+  @@index([operatorId])
+}
+
+/// 系统配置键值表：提醒参数（提前提醒天数、安全天数、保留周期、扫描间隔）等运行时配置。
+/// 存字符串 + 类型标记，读取时按 valueType 还原，避免为每个参数加一列。
+model SystemConfig {
+  key       String   @id
+  value     String
+  valueType String   @default("NUMBER")
+  label     String?
+  updatedAt DateTime @updatedAt
+}
+
+/// 用户反馈：所有登录用户都可以提交，处理范围由系统 B 的接收部门配置决定。
+model Feedback {
+  id            String   @id @default(cuid())
+  feedbackNo    String   @unique
+  title         String
+  content       String
+  category      String?
+  priority      String   @default("NORMAL")
+  statusCode    String   @default("PENDING")
+  createdById   String
+  handledById   String?
+  handlingNote  String?
+  resolvedAt    DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  createdBy     User     @relation("FeedbackSubmitter", fields: [createdById], references: [id], onDelete: Restrict)
+  handledBy     User?    @relation("FeedbackHandler", fields: [handledById], references: [id], onDelete: SetNull)
+
+  @@index([statusCode, createdAt])
+  @@index([createdById, createdAt])
+}
+
+/// 反馈接收部门配置。每条配置记录代表一个接收部门，当前系统支持一个或多个部门。
+model FeedbackRoutingDepartment {
+  departmentId String   @id
+  updatedById  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  department   Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
+  updatedBy   User?      @relation("FeedbackRouteUpdater", fields: [updatedById], references: [id], onDelete: SetNull)
+}
+
+enum ReminderType {
+  /// 合同法定截止日临近
+  CONTRACT_DEADLINE
+  /// 内部安全日临近（内部缓冲期，留出复核时间）
+  INTERNAL_SAFETY
+  /// 项目当前节点超过时限
+  NODE_OVERDUE
+  /// 待回款合同（PRD 4.10）：项目已全部走完但款项未收齐
+  PAYMENT_PENDING
+}
+
+/// 提醒：由提醒中心扫描生成，可标记为已处理。
+///
+/// dedupeKey 是幂等的关键：同一对象 + 同一提醒类型 + 同一到期日只会有一条提醒，
+/// 反复扫描不会产生重复；到期日变更后 dedupeKey 变化，会生成一条新提醒（旧提醒按保留周期清理）。
+model Reminder {
+  id             String       @id @default(cuid())
+  type           ReminderType
+  /// 被提醒对象类型：Contract / Project
+  sourceType     String
+  sourceId       String
+  /// 冗余展示字段与跳转信息
+  sourceNo       String?
+  title          String
+  detail         String?
+  /// 触发时间：到期日 - 提前提醒天数
+  triggerAt      DateTime
+  /// 到期时间：提醒针对的那个截止日
+  dueAt          DateTime
+  /// 逾期天数，未逾期为 0
+  overdueDays    Int          @default(0)
+  /// 预警档位（PRD 4.7 分级预警）：NORMAL / NOTICE / WARNING / URGENT / OVERDUE
+  alertLevel     String       @default("NORMAL")
+  /// 命中的档位阈值（剩余天数），用于说明"为什么是这个级别"
+  tierDays       Int?
+  dedupeKey      String       @unique
+  isHandled      Boolean      @default(false)
+  handledAt      DateTime?
+  handledById    String?
+  handleNote     String?
+  /// 扫描时该提醒对象是否已结束（合同已完成/已终止、项目已结束），结束后不再重复提醒
+  isSourceClosed Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  handledBy      User?        @relation("ReminderHandler", fields: [handledById], references: [id], onDelete: SetNull)
+
+  @@index([isHandled, triggerAt])
+  @@index([type, isHandled])
+  @@index([sourceType, sourceId])
+  @@index([dueAt])
+  @@index([alertLevel, isHandled])
+}
+
+model FileAsset {
+  id           String    @id @default(cuid())
+  resourceType String
+  resourceId   String
+  originalName String
+  storageKey   String    @unique
+  mimeType     String
+  sizeBytes    BigInt
+  uploadedById String?
+  createdAt    DateTime  @default(now())
+  deletedAt    DateTime?
+  uploadedBy   User?     @relation("FileUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  @@index([resourceType, resourceId])
+}
+
+/// 单据流水号计数器：按业务类型 + 前缀 + 年份独立计数，供合同号、项目序号、回款号原子分配使用。
+model DocumentSequence {
+  id        String   @id @default(cuid())
+  scope     String
+  prefix    String
+  year      Int
+  lastValue Int      @default(0)
+  updatedAt DateTime @updatedAt
+
+  @@unique([scope, prefix, year])
+}
+
+/* ============================================================
+   合同/项目的附属业务数据（PRD 2.2「固定存在，内容可自定义」）
+   ------------------------------------------------------------
+   四个附属模块：官文管理、邮件送达登记、动作记录、申报结果记录。
+
+   建模约定（与客户/合同/项目一致）：
+     - PRD 8.5 / 8.6 列出的字段做成**真实列**（系统字段），便于索引、筛选与
+       「自动生成时限」「超时提醒」这类功能依赖；
+     - 其余字段由系统 B 配置为自定义字段，存进 `customFields` JSONB；
+     - 归属关系严格按 PRD：官文 → 项目，邮件送达 → 官文，动作记录/申报结果 → 项目；
+     - 全部软删除（`deletedAt`），数据保留、可恢复。
+   ============================================================ */
+
+/// 官文管理（PRD 4.5 / 8.5）：官文台账，归属项目；附件走 FileAsset(resourceType='OfficialDocument')
+model OfficialDocument {
+  id                 String         @id @default(cuid())
+  /// 归属项目（PRD 8.5「所属项目」）
+  projectId          String
+  /// 官文类型（受控选项，系统 B 可配；用于推导时限天数）
+  documentType       String?
+  /// 官文名称
+  documentName       String
+  /// 发文机构
+  issuingAuthority   String?
+  /// 官文编号
+  documentNo         String?
+  /// 发文日
+  issuedAt           DateTime?
+  /// 送达日：PRD 4.5「自动生成时限节点」的起算点
+  deliveredAt        DateTime?
+  /// 来源（受控选项）
+  source             String?
+  /// 是否需邮件送达（PRD 8.5）：为真时应在邮件送达登记模块登记
+  needsMailDelivery  Boolean        @default(false)
+  /// 备注
+  note               String?
+  customFields       Json?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  deletedAt          DateTime?
+  /// PRD 7.2：删除或级联作废的原因（级联时会写明是哪张合同/哪个项目被删）
+  deleteReason       String?
+  deletedBy          String?
+  project            Project        @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  mailDeliveries     MailDelivery[]
+
+  @@index([projectId])
+  @@index([documentType])
+  @@index([deliveredAt])
+  @@index([deletedAt])
+}
+
+/// 邮件送达登记（PRD 4.6 / 8.6）：归属官文；用于「超时邮件登记」提醒
+model MailDelivery {
+  id                 String           @id @default(cuid())
+  /// 归属官文（PRD 8.6「所属官文」）
+  officialDocumentId String
+  /// 主收件人邮箱（默认取客户联系人邮箱，可改）
+  recipientEmail     String
+  /// 实际发送日期：用于计算是否超时
+  sentAt             DateTime?
+  /// 发送人
+  sentById           String?
+  /// 登记人
+  registeredById     String?
+  /// 登记时间
+  registeredAt       DateTime         @default(now())
+  /// 状态（受控选项）
+  statusCode         String           @default("PENDING")
+  /// 备注
+  note               String?
+  customFields       Json?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  deletedAt          DateTime?
+  /// PRD 7.2：删除或级联作废的原因
+  deleteReason       String?
+  deletedBy          String?
+  officialDocument   OfficialDocument @relation(fields: [officialDocumentId], references: [id], onDelete: Restrict)
+  sentBy             User?            @relation("MailDeliverySender", fields: [sentById], references: [id], onDelete: SetNull)
+  registeredBy       User?            @relation("MailDeliveryRegistrar", fields: [registeredById], references: [id], onDelete: SetNull)
+
+  @@index([officialDocumentId])
+  @@index([sentAt])
+  @@index([statusCode])
+  @@index([deletedAt])
+}
+
+/// 动作记录（PRD 4.8）：归属项目；动作类型由系统 B 配置
+model ActionRecord {
+  id           String    @id @default(cuid())
+  /// 归属项目
+  projectId    String
+  /// 动作类型（受控选项，系统 B 可配）
+  actionType   String
+  /// 实际日期（PRD 4.8「必录实际日期」）
+  actionAt     DateTime
+  /// 操作人
+  operatorId   String?
+  /// 说明
+  note         String?
+  customFields Json?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+  /// PRD 7.2：删除或级联作废的原因
+  deleteReason String?
+  deletedBy    String?
+  project      Project   @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  operator     User?     @relation("ActionRecordOperator", fields: [operatorId], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@index([actionType])
+  @@index([actionAt])
+  @@index([deletedAt])
+}
+
+/// 申报结果记录（PRD 4.9）：归属项目；状态可修改、修改留痕
+model FilingResult {
+  id           String    @id @default(cuid())
+  /// 归属项目
+  projectId    String
+  /// 结果状态（受控选项：通过 / 不通过 / 待重做）
+  resultCode   String
+  /// 记录日期
+  recordedAt   DateTime
+  /// 记录人
+  recordedById String?
+  /// 说明
+  note         String?
+  customFields Json?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  deletedAt    DateTime?
+  /// PRD 7.2：删除或级联作废的原因
+  deleteReason String?
+  deletedBy    String?
+  project      Project   @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  recordedBy   User?     @relation("FilingResultRecorder", fields: [recordedById], references: [id], onDelete: SetNull)
+
+  @@index([projectId])
+  @@index([resultCode])
+  @@index([recordedAt])
+  @@index([deletedAt])
+}

@@ -1,0 +1,42 @@
+{
+  "name": "@bms/api",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "db:format": "prisma format --schema prisma/schema.prisma",
+    "db:validate": "prisma validate --schema prisma/schema.prisma",
+    "db:generate": "prisma generate --schema prisma/schema.prisma",
+    "db:migrate:dev": "prisma migrate dev --schema prisma/schema.prisma",
+    "db:seed": "tsx prisma/seed.ts",
+    "verify:numbering": "node scripts/verify-numbering-services.cjs",
+    "verify:numbering:data": "node scripts/verify-document-numbering.cjs",
+    "verify:item-count": "node scripts/verify-item-count.cjs",
+    "verify:payment-allocation": "node scripts/verify-payment-allocation.cjs",
+    "verify:history": "node scripts/verify-history-and-locking.cjs",
+    "verify:all": "node scripts/verify-all.cjs",
+    "test": "node -e \"console.log('API tests are not configured yet')\""
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.0.11",
+    "@nestjs/config": "^4.0.2",
+    "@nestjs/core": "^11.0.11",
+    "@nestjs/jwt": "11.0.0",
+    "@nestjs/platform-express": "^11.0.11",
+    "@prisma/client": "^6.16.2",
+    "bcryptjs": "3.0.2",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.1",
+    "prisma": "6.16.2",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3"
+  }
+}

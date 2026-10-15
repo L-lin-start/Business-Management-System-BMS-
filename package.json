@@ -1,0 +1,13 @@
+{
+  "name": "business-management-system",
+  "version": "0.1.0",
+  "private": true,
+  "description": "业务管理系统本地开发工作区",
+  "scripts": {
+    "dev:web": "pnpm --filter @bms/web dev",
+    "dev:api": "pnpm --filter @bms/api dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test"
+  }
+}
